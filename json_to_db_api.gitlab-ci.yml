@@ -1,0 +1,55 @@
+stages:
+  - build
+
+.curling.tmp: &curlings
+    - |+
+      function curling()
+        {
+           curl --silent \
+          --request POST \
+          --header 'Content-Type: application/json' \
+          --url "Webhook" \
+          --data '{"@type": "MessageCard","@context": "http://schema.org/extensions","themeColor": "'"$4"'","summary": "curl webhook after deploy is done","sections": [{"activityTitle": "'"$1"'","activitySubtitle": "'"$3"'","activityImage": "url for image","facts": [{"name": "Assigned to","value": "'"$GITLAB_USER_LOGIN"'"},{"name": "Message","value": "'"$CI_COMMIT_MESSAGE"'"},{"name": "Status","value": "'"$2"'"}]}],"potentialAction": [ {"@type": "OpenUri","name": "Link to the page with changes","targets": [{"os": "default","uri": "'"Repo_Url/neosup_builds/-/commit/$CI_COMMIT_SHA"'"}]}]}'
+        }
+
+Portfolio:
+ stage: build
+ variables:
+   DC: "Content-Type: application/json" # The variable is declared here, because it will need to be escaped in the script (very much escaped)
+ script:
+   - set +e # Allowed to "drop" cmd 
+   - cont=$(jq '.jsonField.packages |= .[:5] + [{"Num":"sec", "Name":"sec", "Ver":"sec"}] + .[5:]' cont.json) # variable with Json content (+ additional element in the array)
+   - sudo salt-ssh "Target" cmd.run "curl -u 'api:pass' -H '$DC' -d 'cont' http://127.0.0.1:4000/database" > /home/gitlab-runner/stdout.json # # Api - request to change a record in the Database, write the stdout to a file
+   - filename=$(git diff "$CI_COMMIT_BEFORE_SHA" "$CI_COMMIT_SHA" --stat | awk '{print $1}' | head -n 1) # var with changed file name
+   - echo $filename # Checking var
+   - id=$(cat /home/gitlab-runner/stdout.json | grep id | head -n 1 | awk '{print $2}' | sed -e 's/,//g; s/"//g') # Var with document id
+   - echo "build = $id" # Checking var
+   - *curlings # Yaml-Anchor
+   - |+
+     versionLocal=$(cat /home/gitlab-runner/stdout.json | grep version | tail -n 1 | awk '{print $2}' | sed 's/,//g') # Var with doc version
+     if [[ ${versionLocal} != *"1"* ]] # if ver is null var=0
+     then
+       versionLocal="0"
+     fi
+   - echo "LocalVer = $versionLocal" # Checking var
+   - > # Get version from ext Database
+     versionRemote=$(curl --show-error 
+     --user "api:pass"
+     --header 'Content-Type: application/json' 
+     --data '{"query": {"id": "'"$id"'"}}'
+     --url "http://IP:4000/find/docs" | grep version | tail -n 1 | awk '{print $2}' | sed 's/,//g')
+   - echo "RemoteVer = $versionRemote" # Checking var
+   - set -e # Deny to "drop" cmd 
+   - |+ # Checking local and remote version. Use func
+     if [ $versionRemote -eq $versionLocal ]
+     then
+       curling user success "$id" 00D700
+     else
+       curling user failure "$id" D70000
+     fi
+ when: manual
+ only:
+   changes:
+     - cont.json
+ tags: 
+   - runner
